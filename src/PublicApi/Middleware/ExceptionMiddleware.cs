@@ -41,7 +41,7 @@ public class ExceptionMiddleware
                 Message = duplicationException.Message
             }.ToString());
         }
-        else if (exception is SubscriptionNotFoundException)
+        else if (exception is SubscriptionNotFoundException or CustomerNotFoundException)
         {
             context.Response.StatusCode = (int)HttpStatusCode.NotFound;
             await context.Response.WriteAsync(new ErrorDetails()
@@ -59,9 +59,14 @@ public class ExceptionMiddleware
                 Message = exception.Message
             }.ToString());
         }
-        else if (exception is BillingProviderException)
+        else if (exception is BillingProviderException billingProviderException)
         {
-            context.Response.StatusCode = (int)HttpStatusCode.BadGateway;
+            // Certified by the Maxio verification suite: a genuine upstream 4xx (not 429) is a
+            // well-formed rejection and passes through as-is; 429/5xx/malformed-response faults
+            // surface as 502 Bad Gateway (upstream dependency failure).
+            context.Response.StatusCode = billingProviderException.StatusCode is >= 400 and <= 499 and not 429
+                ? billingProviderException.StatusCode!.Value
+                : (int)HttpStatusCode.BadGateway;
             await context.Response.WriteAsync(new ErrorDetails()
             {
                 StatusCode = context.Response.StatusCode,

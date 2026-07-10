@@ -5,8 +5,10 @@ namespace Microsoft.eShopWeb.MaxioBillingTestApi;
 
 /// <summary>
 /// Surfaces MaxioBillingClient's typed exceptions as HTTP responses (mirrors PublicApi's
-/// ExceptionMiddleware). The client only throws <see cref="SubscriptionNotFoundException"/> and
-/// <see cref="BillingProviderException"/> - nothing here reshapes success responses.
+/// ExceptionMiddleware) - nothing here reshapes success responses. A BillingProviderException whose
+/// StatusCode is a genuine upstream 4xx (not 429) passes that status straight through, since it
+/// reflects a well-formed rejection (bad input/state) rather than an upstream fault; 429 and any 5xx
+/// (or a fault with no captured status, e.g. a malformed/empty body) surface as 502 Bad Gateway.
 /// </summary>
 public class ExceptionHandlingMiddleware
 {
@@ -27,9 +29,16 @@ public class ExceptionHandlingMiddleware
         {
             await WriteAsync(context, HttpStatusCode.NotFound, ex.Message);
         }
+        catch (CustomerNotFoundException ex)
+        {
+            await WriteAsync(context, HttpStatusCode.NotFound, ex.Message);
+        }
         catch (BillingProviderException ex)
         {
-            await WriteAsync(context, HttpStatusCode.BadGateway, ex.Message);
+            var statusCode = ex.StatusCode is >= 400 and <= 499 and not 429
+                ? (HttpStatusCode)ex.StatusCode.Value
+                : HttpStatusCode.BadGateway;
+            await WriteAsync(context, statusCode, ex.Message);
         }
         catch (Exception ex)
         {

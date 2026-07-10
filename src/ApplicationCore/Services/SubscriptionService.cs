@@ -35,7 +35,7 @@ public class SubscriptionService : ISubscriptionService
         Guard.Against.NullOrEmpty(customerReference, nameof(customerReference));
         Guard.Against.NullOrEmpty(productHandle, nameof(productHandle));
 
-        var existingSubscriptions = await _billingClient.ListSubscriptionsForCustomerAsync(customerReference);
+        var existingSubscriptions = await ListSubscriptionsOrEmptyAsync(customerReference);
         var existingLive = existingSubscriptions.FirstOrDefault(s => !TerminalStates.Contains(s.State));
         if (existingLive != null)
         {
@@ -53,7 +53,24 @@ public class SubscriptionService : ISubscriptionService
     public Task<IReadOnlyList<BillingSubscription>> GetSubscriptionsForCustomerAsync(string customerReference)
     {
         Guard.Against.NullOrEmpty(customerReference, nameof(customerReference));
-        return _billingClient.ListSubscriptionsForCustomerAsync(customerReference);
+        return ListSubscriptionsOrEmptyAsync(customerReference);
+    }
+
+    /// <summary>
+    /// A customer Maxio has never heard of (e.g. before their first subscribe) has no subscriptions,
+    /// not an error - IBillingClient reports that as CustomerNotFoundException; this is the one place
+    /// that distinction is collapsed back into "no subscriptions" for eShop's own callers.
+    /// </summary>
+    private async Task<IReadOnlyList<BillingSubscription>> ListSubscriptionsOrEmptyAsync(string customerReference)
+    {
+        try
+        {
+            return await _billingClient.ListSubscriptionsForCustomerAsync(customerReference);
+        }
+        catch (CustomerNotFoundException)
+        {
+            return Array.Empty<BillingSubscription>();
+        }
     }
 
     public async Task<BillingSubscription> GetSubscriptionAsync(long subscriptionId, string actingCustomerReference, bool isAdmin)
@@ -98,7 +115,7 @@ public class SubscriptionService : ISubscriptionService
     {
         Guard.Against.NullOrEmpty(customerReference, nameof(customerReference));
 
-        var subscriptions = await _billingClient.ListSubscriptionsForCustomerAsync(customerReference);
+        var subscriptions = await ListSubscriptionsOrEmptyAsync(customerReference);
         var active = subscriptions.FirstOrDefault(s => s.State == "active");
         if (active == null)
         {

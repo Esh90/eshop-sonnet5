@@ -98,13 +98,21 @@ public class MaxioBillingClient : IBillingClient
 
     public async Task<IReadOnlyList<BillingSubscription>> ListSubscriptionsForCustomerAsync(string customerReference)
     {
-        var customer = await TryGetAsync<CustomerEnvelope>($"customers/lookup.json?reference={Uri.EscapeDataString(customerReference)}");
-        if (customer?.Customer == null)
+        // Mirrors Maxio's own id-or-reference convention (seen elsewhere, e.g. product family id-or-handle):
+        // a numeric value is the real Maxio customer id, used directly; anything else is resolved by reference.
+        long customerId;
+        if (!long.TryParse(customerReference, out customerId))
         {
-            return Array.Empty<BillingSubscription>();
+            var customer = await TryGetAsync<CustomerEnvelope>($"customers/lookup.json?reference={Uri.EscapeDataString(customerReference)}");
+            if (customer?.Customer == null)
+            {
+                throw new CustomerNotFoundException(customerReference);
+            }
+
+            customerId = customer.Customer.Id;
         }
 
-        var envelopes = await GetAsync<List<SubscriptionEnvelope>>($"customers/{customer.Customer.Id}/subscriptions.json");
+        var envelopes = await GetAsync<List<SubscriptionEnvelope>>($"customers/{customerId}/subscriptions.json");
         return (envelopes ?? new List<SubscriptionEnvelope>())
             .Where(e => e.Subscription != null)
             .Select(e => MapSubscription(e.Subscription!))
@@ -269,10 +277,23 @@ public class MaxioBillingClient : IBillingClient
         if (!response.IsSuccessStatusCode)
         {
             throw new BillingProviderException(
-                $"Maxio request failed ({(int)response.StatusCode} {method} {relativePath}): {ExtractErrorMessage(responseBody)}");
+                $"Maxio request failed ({(int)response.StatusCode} {method} {relativePath}): {ExtractErrorMessage(responseBody)}",
+                (int)response.StatusCode);
         }
 
-        return string.IsNullOrWhiteSpace(responseBody) ? default : JsonSerializer.Deserialize<T>(responseBody, JsonOptions);
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            throw new BillingProviderException($"Maxio returned {(int)response.StatusCode} {method} {relativePath} with an empty body.");
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<T>(responseBody, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            throw new BillingProviderException($"Maxio returned {(int)response.StatusCode} {method} {relativePath} with an unparseable body.");
+        }
     }
 
     private static string ExtractErrorMessage(string body)
