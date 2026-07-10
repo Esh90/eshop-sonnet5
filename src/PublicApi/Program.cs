@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Net.Http.Headers;
 using System.Text;
 using BlazorShared;
+using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Identity;
@@ -9,15 +11,18 @@ using Microsoft.eShopWeb;
 using Microsoft.eShopWeb.ApplicationCore.Constants;
 using Microsoft.eShopWeb.ApplicationCore.Interfaces;
 using Microsoft.eShopWeb.ApplicationCore.Services;
+using Microsoft.eShopWeb.Infrastructure.Configuration;
 using Microsoft.eShopWeb.Infrastructure.Data;
 using Microsoft.eShopWeb.Infrastructure.Identity;
 using Microsoft.eShopWeb.Infrastructure.Logging;
+using Microsoft.eShopWeb.Infrastructure.Services;
 using Microsoft.eShopWeb.PublicApi;
 using Microsoft.eShopWeb.PublicApi.Middleware;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MinimalApi.Endpoint.Configurations.Extensions;
@@ -44,6 +49,23 @@ var catalogSettings = builder.Configuration.Get<CatalogSettings>() ?? new Catalo
 builder.Services.AddSingleton<IUriComposer>(new UriComposer(catalogSettings));
 builder.Services.AddScoped(typeof(IAppLogger<>), typeof(LoggerAdapter<>));
 builder.Services.AddScoped<ITokenClaimsService, IdentityTokenClaimService>();
+
+builder.Services.AddMediatR(cfg =>
+    cfg.RegisterServicesFromAssembly(typeof(SubscriptionService).Assembly));
+
+builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.Configure<MaxioSettings>(builder.Configuration.GetSection("Maxio"));
+
+// Typed client via IHttpClientFactory. BaseAddress is resolved from configuration so the
+// SAME build can target prod / dev / a local mock - explicit Maxio:BaseUrl wins, else derive
+// from Subdomain (+ region). See plan.md §2.3. Do NOT hardcode the host.
+builder.Services.AddHttpClient<IBillingClient, MaxioBillingClient>((sp, http) =>
+{
+    var maxioSettings = sp.GetRequiredService<IOptions<MaxioSettings>>().Value;
+    http.BaseAddress = new Uri(maxioSettings.ResolveBaseUrl() + "/");
+    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+        "Basic", Convert.ToBase64String(Encoding.ASCII.GetBytes($"{maxioSettings.ApiKey}:x")));
+});
 
 var configSection = builder.Configuration.GetRequiredSection(BaseUrlConfiguration.CONFIG_NAME);
 builder.Services.Configure<BaseUrlConfiguration>(configSection);
@@ -144,6 +166,22 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "An error occurred seeding the DB.");
+    }
+
+    try
+    {
+        var billingClient = scopedProvider.GetRequiredService<IBillingClient>();
+        var meteredComponent = await billingClient.GetMeteredComponentAsync();
+        if (!meteredComponent.IsMetered)
+        {
+            app.Logger.LogWarning(
+                "Maxio component '{Handle}' is not of metered kind (kind: '{Kind}'); usage recording (UC2) will fail until the seed is corrected.",
+                meteredComponent.Handle, meteredComponent.Kind);
+        }
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Could not validate the Maxio metered usage component at startup; usage recording (UC2) will re-validate on first use.");
     }
 }
 

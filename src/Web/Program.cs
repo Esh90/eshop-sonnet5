@@ -187,6 +187,22 @@ using (var scope = app.Services.CreateScope())
     {
         app.Logger.LogError(ex, "An error occurred seeding the DB.");
     }
+
+    try
+    {
+        var billingClient = scopedProvider.GetRequiredService<IBillingClient>();
+        var meteredComponent = await billingClient.GetMeteredComponentAsync();
+        if (!meteredComponent.IsMetered)
+        {
+            app.Logger.LogWarning(
+                "Maxio component '{Handle}' is not of metered kind (kind: '{Kind}'); usage recording (UC2) will fail until the seed is corrected.",
+                meteredComponent.Handle, meteredComponent.Kind);
+        }
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Could not validate the Maxio metered usage component at startup; usage recording (UC2) will re-validate on first use.");
+    }
 }
 
 var catalogBaseUrl = builder.Configuration.GetValue(typeof(string), "CatalogBaseUrl") as string;
